@@ -76,12 +76,26 @@ CREATE TABLE wash_history (
 
 -- 7. 세탁 진행 상태
 CREATE TABLE wash_status (
-    wash_status_id      VARCHAR(50)  NOT NULL,
-    washer_id           VARCHAR(50)  NOT NULL,
-    conta_level VARCHAR(50) NOT NULL,
-    load_status         VARCHAR(50)  NOT NULL,
-    time_info           DATETIME     NOT NULL,
+    wash_status_id        VARCHAR(50)   NOT NULL,
+    wash_id               VARCHAR(50)   NOT NULL,
+    washer_id             VARCHAR(50)   NOT NULL,
+
+    conta_level           DECIMAL(5,2)  NOT NULL,   -- 시작 오염도
+    current_conta_level   DECIMAL(5,2)  NOT NULL,   -- 현재 남은 오염도
+    cleaned_ratio         DECIMAL(5,2)  NOT NULL,   -- 세척 완료율(%)
+
+    current_stage         VARCHAR(50)   NOT NULL,   -- 세탁중/헹굼중/탈수중/종료
+    progress_percent      DECIMAL(5,2)  NOT NULL,   -- 전체 진행률(%)
+
+    remaining_time        INT           NULL,       -- 남은 시간(분)
+    expected_end_time     DATETIME      NULL,       -- 예상 종료 시각
+    updated_at            DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
     PRIMARY KEY (wash_status_id),
+
+    CONSTRAINT fk_status_wash
+        FOREIGN KEY (wash_id) REFERENCES wash_history(wash_id),
+
     CONSTRAINT fk_status_washer
         FOREIGN KEY (washer_id) REFERENCES washer_info(washer_id)
 );

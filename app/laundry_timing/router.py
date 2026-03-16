@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from sqlalchemy import text
 from fastapi import APIRouter, HTTPException, Query
 
 from app.laundry_timing.schemas import AirQualityResponse, RegionPresetResponse, WeeklyWeatherResponse
@@ -157,3 +158,79 @@ def _build_air_quality_address_hint(address: str) -> str:
     if len(tokens) >= 2:
         return " ".join(tokens[:2])
     return address
+
+from datetime import datetime
+from fastapi import APIRouter
+from app.database import SessionLocal
+
+router = APIRouter(prefix="/api/laundry-timing", tags=["laundry-timing"])
+
+
+@router.get("/recommend")
+def recommend_laundry():
+    # 더미 데이터 (추후 DB/센서/날씨 API 연동 예정)
+    current_weight = 3.5
+    washer_capacity = 8.0
+    hours_since_last_wash = 48.0
+    weight_increase = 0.7
+    rain_expected = True
+    high_humidity = True
+
+    # 적재율 계산
+    load_ratio = round((current_weight / washer_capacity) * 100, 2)
+
+    # 날씨 요약
+    if rain_expected and high_humidity:
+        weather_summary = "비 예보 + 높은 습도"
+    elif rain_expected:
+        weather_summary = "비 예보"
+    elif high_humidity:
+        weather_summary = "높은 습도"
+    else:
+        weather_summary = "건조 환경 양호"
+
+    # 추천 로직
+    if load_ratio >= 80:
+        recommendation = "지금 세탁 추천"
+        reason = "현재 적재율이 높아 바로 세탁하는 것이 좋습니다."
+        recommend_level = "high"
+        status_image_key = "wash_now"
+
+    elif load_ratio >= 60 and rain_expected:
+        recommendation = "오늘 안에 세탁 추천"
+        reason = "적재량이 쌓였고 비 예보가 있어 미리 세탁하는 것이 좋습니다."
+        recommend_level = "high"
+        status_image_key = "wash_today"
+
+    elif weight_increase >= 1.0 and rain_expected:
+        recommendation = "곧 세탁 추천"
+        reason = "최근 적재량이 빠르게 증가하고 있고 날씨가 나빠질 수 있습니다."
+        recommend_level = "medium"
+        status_image_key = "wash_soon"
+
+    elif hours_since_last_wash >= 72:
+        recommendation = "세탁 권장"
+        reason = "마지막 세탁 후 시간이 많이 지났습니다."
+        recommend_level = "medium"
+        status_image_key = "wash_recommended"
+
+    else:
+        recommendation = "아직 세탁 필요 없음"
+        reason = "현재 적재량과 환경 기준으로 아직 세탁 필요성이 낮습니다."
+        recommend_level = "low"
+        status_image_key = "wait"
+
+    return {
+        "current_weight": current_weight,
+        "washer_capacity": washer_capacity,
+        "load_ratio": load_ratio,
+        "weight_increase": weight_increase,
+        "hours_since_last_wash": hours_since_last_wash,
+        "rain_expected": rain_expected,
+        "high_humidity": high_humidity,
+        "weather_summary": weather_summary,
+        "recommendation": recommendation,
+        "reason": reason,
+        "recommend_level": recommend_level,
+        "status_image_key": status_image_key
+    }
