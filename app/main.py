@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from app.fabric_damage import router as fabric_damage_router
 from app.laundry_timing import router as laundry_timing_router
 from app.laundry_progress import router as laundry_progress_router
+from app.drying_optimization.router import router as drying_optimization_router
 
 
 app = FastAPI(
@@ -17,6 +18,7 @@ app = FastAPI(
 app.include_router(fabric_damage_router)
 app.include_router(laundry_timing_router)
 app.include_router(laundry_progress_router)
+app.include_router(drying_optimization_router)
 
 
 @app.get("/health")
