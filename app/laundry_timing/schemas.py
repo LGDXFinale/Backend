@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 
 RecommendationLevel = Literal["low", "medium", "high"]
+LoadSource = Literal["sensor", "manual"]
 
 
 class WeatherDayResponse(BaseModel):
@@ -75,13 +76,45 @@ class LaundryTimingWeatherSnapshotResponse(BaseModel):
     weather_error: str | None = Field(None, description="날씨 조회 실패 메시지")
 
 
+class CurrentLoadResponse(BaseModel):
+    member_id: str = Field(..., description="회원 ID")
+    washer_id: str = Field(..., description="세탁기 ID")
+    measured_at: str = Field(..., description="적재량 측정 시각")
+    current_weight: float = Field(..., gt=0, description="현재 적재량(kg)")
+    washer_capacity: float = Field(..., gt=0, description="세탁기 용량(kg)")
+    load_ratio: float = Field(..., ge=0, le=100, description="적재율(%)")
+    load_source: LoadSource = Field(..., description="적재량 측정 출처")
+    manual_refresh: bool = Field(..., description="수동 새로고침 여부")
+    basket_sensor_weight_kg: float | None = Field(None, description="스마트 바구니 센서 무게")
+    note: str = Field(..., description="적재량 판단 요약")
+
+
+class FutureLoadPredictionResponse(BaseModel):
+    member_id: str = Field(..., description="회원 ID")
+    washer_id: str = Field(..., description="세탁기 ID")
+    calculated_at: str = Field(..., description="예측 계산 시각")
+    calculation_basis: str = Field(..., description="저장값이 아닌 실시간 계산 기준 설명")
+    forecast_hours: int = Field(..., ge=1, description="예측 시간 범위")
+    household_size: int = Field(..., ge=1, description="가구원 수")
+    accumulation_speed_kg_per_day: float = Field(..., ge=0, description="하루 적재 증가량 예측")
+    predicted_weight_kg: float = Field(..., ge=0, description="예상 적재량")
+    predicted_load_ratio: float = Field(..., ge=0, le=100, description="예상 적재율")
+    urgency_adjustment_score: int = Field(..., ge=0, le=100, description="긴급도 보정 점수")
+    forecast_summary: str = Field(..., description="예측 요약")
+
+
 class LaundryRecommendationResponse(BaseModel):
     generated_at: str = Field(..., description="추천 생성 시각")
+    member_id: str = Field(..., description="회원 ID")
+    washer_id: str = Field(..., description="세탁기 ID")
     current_weight: float = Field(..., gt=0, description="현재 세탁물 무게(kg)")
     washer_capacity: float = Field(..., gt=0, description="세탁기 용량(kg)")
     load_ratio: float = Field(..., ge=0, le=100, description="세탁기 적재율(%)")
     weight_increase: float = Field(..., ge=0, description="최근 증가한 세탁물 무게(kg)")
     hours_since_last_wash: float = Field(..., ge=0, description="마지막 세탁 후 경과 시간")
+    household_size: int = Field(..., ge=1, description="가구원 수")
+    urgent_clothing_count: int = Field(..., ge=0, description="긴급 세탁 의류 수")
+    urgency_score: int = Field(..., ge=0, le=100, description="의류 긴급도 점수")
     rain_expected: bool = Field(..., description="가까운 시일 내 비 예보 여부")
     high_humidity: bool = Field(..., description="가까운 시일 내 고습도 여부")
     weather_summary: str = Field(..., description="날씨 요약")
@@ -91,6 +124,11 @@ class LaundryRecommendationResponse(BaseModel):
     status_image_key: str = Field(..., description="상태 이미지 키")
     execution_window: str = Field(..., description="권장 실행 시점")
     timing_score: int = Field(..., ge=0, le=100, description="세탁 필요도 종합 점수")
+    current_load: CurrentLoadResponse = Field(..., description="현재 적재량 스냅샷")
+    future_load_prediction: FutureLoadPredictionResponse = Field(
+        ...,
+        description="저장 없이 현재 데이터로 계산한 미래 적재량 예측",
+    )
     weather: LaundryTimingWeatherSnapshotResponse = Field(..., description="날씨 판단 스냅샷")
     top_considerations: list[LaundryTimingConsiderationResponse] = Field(
         ...,
