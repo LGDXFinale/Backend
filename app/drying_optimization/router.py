@@ -1,91 +1,35 @@
-import os
-import requests
-from fastapi import APIRouter, HTTPException
+from __future__ import annotations
+
+from fastapi import APIRouter, HTTPException, Query
+
+from app.drying_optimization.schemas import DryRecommendationResponse
+from app.drying_optimization.service import get_dry_recommendation
+
 
 router = APIRouter(prefix="/api/dry-recommendation", tags=["dry-recommendation"])
 
 
-def get_weather_data():
-    api_key = os.getenv("OPENWEATHER_API_KEY")
-    city = "Seoul"
-    url = "https://api.openweathermap.org/data/2.5/weather"
-
-    if not api_key:
-        # 테스트용 더미값
-        return {
-            "is_raining": False,
-            "humidity": 55,
-            "temperature": 22
-        }
-
-    params = {
-        "q": city,
-        "appid": api_key,
-        "units": "metric"
-    }
-
+@router.get("/recommend", response_model=DryRecommendationResponse)
+def recommend(
+    city: str = Query("Seoul", description="날씨 조회 도시"),
+    laundry_weight_kg: float = Query(3.0, gt=0, description="세탁물 무게(kg)"),
+    has_delicate_items: bool = Query(False, description="민감 소재 포함 여부"),
+    needs_fast_dry: bool = Query(False, description="빠른 건조 필요 여부"),
+    has_outdoor_space: bool = Query(True, description="실외 건조 가능 여부"),
+    humidity_override: int | None = Query(None, ge=0, le=100, description="습도 수동 입력"),
+    temperature_override: float | None = Query(None, description="기온 수동 입력"),
+    is_raining_override: bool | None = Query(None, description="강수 여부 수동 입력"),
+) -> DryRecommendationResponse:
     try:
-        response = requests.get(url, params=params, timeout=5)
-        response.raise_for_status()
-    except requests.RequestException:
-        raise HTTPException(status_code=502, detail="외부 날씨 API 호출에 실패했습니다.")
-
-    data = response.json()
-
-    weather_main = data["weather"][0]["main"]
-    humidity = data["main"]["humidity"]
-    temperature = data["main"]["temp"]
-
-    is_raining = weather_main in ["Rain", "Drizzle", "Thunderstorm"]
-
-    return {
-        "is_raining": is_raining,
-        "humidity": humidity,
-        "temperature": temperature
-    }
-
-
-@router.get("/recommend")
-def get_dry_recommendation():
-    weather_data = get_weather_data()
-
-    is_raining = weather_data["is_raining"]
-    humidity = weather_data["humidity"]
-    temperature = weather_data["temperature"]
-
-    # 1 = 실내건조, 2 = 실외건조, 3 = 건조기
-    if is_raining:
-        dry_rec_method = 3
-        dry_rec_time = 60
-        reason = "비가 와서 건조기를 추천합니다."
-    elif humidity >= 80:
-        dry_rec_method = 3
-        dry_rec_time = 70
-        reason = "습도가 높아 건조기를 추천합니다."
-    elif temperature >= 20 and humidity < 60:
-        dry_rec_method = 2
-        dry_rec_time = 120
-        reason = "기온이 적절하고 습도가 낮아 실외건조를 추천합니다."
-    else:
-        dry_rec_method = 1
-        dry_rec_time = 180
-        reason = "현재 날씨 기준으로 실내건조를 추천합니다."
-
-    method_map = {
-        1: "실내건조",
-        2: "실외건조",
-        3: "건조기"
-    }
-
-    return {
-        "dry_rec_id": "DR001",
-        "dry_rec_time": dry_rec_time,
-        "dry_rec_method": dry_rec_method,
-        "dry_rec_method_name": method_map.get(dry_rec_method, "알 수 없음"),
-        "reason": reason,
-        "weather_info": {
-            "is_raining": is_raining,
-            "humidity": humidity,
-            "temperature": temperature
-        }
-    }
+        return get_dry_recommendation(
+            city=city,
+            laundry_weight_kg=laundry_weight_kg,
+            has_delicate_items=has_delicate_items,
+            needs_fast_dry=needs_fast_dry,
+            has_outdoor_space=has_outdoor_space,
+            humidity_override=humidity_override,
+            temperature_override=temperature_override,
+            is_raining_override=is_raining_override,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
