@@ -1,4 +1,4 @@
-"""Features derived from '섬유 손상 가이드.md'."""
+"""Fabric damage risk analysis and wash recommendation service."""
 
 from .router import router
 

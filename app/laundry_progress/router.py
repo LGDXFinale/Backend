@@ -1,74 +1,51 @@
-from datetime import datetime
-from fastapi import APIRouter
+from __future__ import annotations
+
+from fastapi import APIRouter, Query
+
+from app.demo_defaults import (
+    DEMO_BASE_CYCLE_MINUTES,
+    DEMO_CYCLE_ELAPSED_MINUTES,
+    DEMO_CURRENT_LOAD_KG,
+    DEMO_FINAL_SPIN_RPM,
+    DEMO_LOAD_VARIATION_KG,
+    DEMO_MEMBER_ID,
+    DEMO_WASHER_CAPACITY_KG,
+    DEMO_WASHER_ID,
+    DEMO_WASH_STATUS_ID,
+)
+from app.laundry_progress.schemas import LaundryProgressResponse
+from app.laundry_progress.service import get_laundry_progress_status
+
 
 router = APIRouter(prefix="/api/laundry-progress", tags=["laundry-progress"])
 
 
-@router.get("/status")
-def get_laundry_progress():
-    # 기존 DB 컬럼 형태를 가정한 더미 데이터
-    wash_status = {
-        "wash_status_id": "WS001",
-        "washer_id": "W001",
-        "conta_level": "중",
-        "load_status": "세탁중",
-        "time_info": "2026-03-16 15:00:00"
-    }
-
-    # 기존 DB 값 사용
-    washer_id = wash_status["washer_id"]
-    conta_level = wash_status["conta_level"]
-    load_status = wash_status["load_status"]
-    expected_end_time = wash_status["time_info"]
-
-    # 화면용 파생값 계산
-    if conta_level == "상":
-        cleaned_ratio = 35.0
-    elif conta_level == "중":
-        cleaned_ratio = 55.0
-    else:
-        cleaned_ratio = 75.0
-
-    if load_status == "대기":
-        progress_percent = 0
-        status_image_key = "waiting"
-    elif load_status == "세탁중":
-        progress_percent = 45
-        status_image_key = "washing"
-    elif load_status == "헹굼중":
-        progress_percent = 70
-        status_image_key = "rinsing"
-    elif load_status == "탈수중":
-        progress_percent = 90
-        status_image_key = "spinning"
-    elif load_status == "종료":
-        progress_percent = 100
-        cleaned_ratio = 100.0
-        status_image_key = "done"
-    else:
-        progress_percent = 0
-        status_image_key = "unknown"
-
-    # 남은 시간 계산
-    remaining_time = None
-    try:
-        end_dt = datetime.strptime(expected_end_time, "%Y-%m-%d %H:%M:%S")
-        now = datetime.now()
-        diff_minutes = int((end_dt - now).total_seconds() / 60)
-        remaining_time = diff_minutes if diff_minutes > 0 else 0
-    except ValueError:
-        remaining_time = None
-
-    return {
-        "wash_status_id": wash_status["wash_status_id"],
-        "washer_id": washer_id,
-        "conta_level": conta_level,              # 원래 DB 값
-        "load_status": load_status,              # 원래 DB 값
-        "time_info": expected_end_time,          # 원래 DB 값
-        "current_status": load_status,           # 화면용 별칭
-        "remaining_time": remaining_time,        # 화면용 계산값
-        "expected_end_time": expected_end_time,  # 화면용 별칭
-        "progress_percent": progress_percent,    # 화면용 계산값
-        "cleaned_ratio": cleaned_ratio,          # 화면용 계산값
-        "status_image_key": status_image_key     # 프론트 이미지 매핑용
-    }
+@router.get("/status", response_model=LaundryProgressResponse)
+def get_laundry_progress(
+    member_id: str = Query(DEMO_MEMBER_ID, description="회원 ID"),
+    wash_status_id: str = Query(DEMO_WASH_STATUS_ID, description="세탁 상태 ID"),
+    washer_id: str = Query(DEMO_WASHER_ID, description="세탁기 ID"),
+    conta_level: str = Query("중", description="초기 오염도"),
+    wash_status: int = Query(1, ge=0, le=4, description="세탁 상태 코드"),
+    current_load_kg: float = Query(DEMO_CURRENT_LOAD_KG, ge=0, description="현재 세탁물 무게"),
+    washer_capacity_kg: float = Query(DEMO_WASHER_CAPACITY_KG, gt=0, description="세탁기 용량"),
+    load_variation_kg: float = Query(DEMO_LOAD_VARIATION_KG, description="세탁 중 감지된 부하 변화량"),
+    contamination_sensor_percent: int | None = Query(None, ge=0, le=100, description="센서 오염 잔량"),
+    cycle_elapsed_minutes: int = Query(DEMO_CYCLE_ELAPSED_MINUTES, ge=0, description="현재까지 진행 시간"),
+    base_cycle_minutes: int = Query(DEMO_BASE_CYCLE_MINUTES, ge=1, description="기본 세탁 시간"),
+    final_spin_rpm: int | None = Query(DEMO_FINAL_SPIN_RPM, ge=0, description="현재 또는 마지막 탈수 RPM"),
+) -> LaundryProgressResponse:
+    return get_laundry_progress_status(
+        member_id=member_id,
+        wash_status_id=wash_status_id,
+        washer_id=washer_id,
+        conta_level=conta_level,
+        wash_status=wash_status,
+        current_load_kg=current_load_kg,
+        washer_capacity_kg=washer_capacity_kg,
+        load_variation_kg=load_variation_kg,
+        contamination_sensor_percent=contamination_sensor_percent,
+        cycle_elapsed_minutes=cycle_elapsed_minutes,
+        base_cycle_minutes=base_cycle_minutes,
+        final_spin_rpm=final_spin_rpm,
+    )

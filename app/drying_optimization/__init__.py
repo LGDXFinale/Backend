@@ -1,1 +1,5 @@
-"""Features derived from '건조 방법 최적화 서비스.md'."""
+"""Weather-aware drying method recommendation service."""
+
+from .router import router
+
+__all__ = ["router"]

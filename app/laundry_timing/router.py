@@ -1,47 +1,36 @@
 from __future__ import annotations
 
-from sqlalchemy import text
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Query
 
-from app.laundry_timing.schemas import AirQualityResponse, RegionPresetResponse, WeeklyWeatherResponse
-from app.utils import (
-    AirQualityError,
-    PublicDataWeatherError,
-    VWorldGeocoderError,
-    find_nearest_region_preset,
-    geocode_address,
-    get_current_air_quality,
-    get_region_presets,
-    get_weekly_weather,
-    latlon_to_grid,
-    resolve_region_preset,
+from app.demo_defaults import (
+    DEMO_CURRENT_LOAD_KG,
+    DEMO_HOUSEHOLD_SIZE,
+    DEMO_HOURS_SINCE_LAST_WASH,
+    DEMO_MEMBER_ID,
+    DEMO_REGION,
+    DEMO_SENSOR_LOAD_KG,
+    DEMO_URGENT_CLOTHING_COUNT,
+    DEMO_WASHER_CAPACITY_KG,
+    DEMO_WASHER_ID,
+    DEMO_WEIGHT_INCREASE_KG,
 )
+from app.laundry_timing.schemas import (
+    CurrentLoadResponse,
+    FutureLoadPredictionResponse,
+    LaundryRecommendationResponse,
+    RegionPresetResponse,
+    WeeklyWeatherResponse,
+)
+from app.laundry_timing.service import LaundryTimingService
 
 
 router = APIRouter(prefix="/api/laundry-timing", tags=["laundry-timing"])
+service = LaundryTimingService()
 
 
 @router.get("/weather/regions", response_model=list[RegionPresetResponse])
 async def list_weather_regions() -> list[RegionPresetResponse]:
-    responses: list[RegionPresetResponse] = []
-
-    for preset in get_region_presets():
-        nx, ny = latlon_to_grid(preset.latitude, preset.longitude)
-        responses.append(
-            RegionPresetResponse(
-                name=preset.name,
-                aliases=list(preset.aliases),
-                latitude=preset.latitude,
-                longitude=preset.longitude,
-                nx=nx,
-                ny=ny,
-                mid_land_reg_id=preset.mid_land_reg_id,
-                mid_ta_reg_id=preset.mid_ta_reg_id,
-                description=preset.description,
-            )
-        )
-
-    return responses
+    return service.list_weather_regions()
 
 
 @router.get("/weather/weekly", response_model=WeeklyWeatherResponse)
@@ -56,181 +45,123 @@ async def read_weekly_weather(
     mid_land_reg_id: str | None = Query(None, description="중기육상예보 지역 코드"),
     mid_ta_reg_id: str | None = Query(None, description="중기기온예보 지역 코드"),
 ) -> WeeklyWeatherResponse:
-    preset = None
-    resolved_latitude = latitude
-    resolved_longitude = longitude
-    address_hint = address
-
-    if region:
-        preset = resolve_region_preset(region)
-        if preset is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"지원하지 않는 지역입니다: {region}",
-            )
-
-    if address and (resolved_latitude is None or resolved_longitude is None):
-        if address_type not in {"auto", "road", "parcel"}:
-            raise HTTPException(
-                status_code=422,
-                detail="address_type은 auto, road, parcel 중 하나여야 합니다.",
-            )
-
-        try:
-            geocoded = await geocode_address(
-                address=address,
-                address_type=address_type,  # type: ignore[arg-type]
-            )
-        except VWorldGeocoderError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-        resolved_latitude = geocoded.latitude
-        resolved_longitude = geocoded.longitude
-        address_hint = geocoded.refined_text or geocoded.address
-
-    if preset is None and resolved_latitude is not None and resolved_longitude is not None:
-        # 중기예보는 권역 단위이므로 가장 가까운 대표 권역으로 매핑한다.
-        preset = find_nearest_region_preset(resolved_latitude, resolved_longitude)
-        if address_hint is None:
-            address_hint = preset.name
-
-    resolved_mid_land_reg_id = mid_land_reg_id or (preset.mid_land_reg_id if preset else None)
-    resolved_mid_ta_reg_id = mid_ta_reg_id or (preset.mid_ta_reg_id if preset else None)
-
-    if resolved_mid_land_reg_id is None or resolved_mid_ta_reg_id is None:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "mid_land_reg_id와 mid_ta_reg_id를 직접 주거나 "
-                "region, latitude/longitude, address 중 하나를 사용해야 합니다."
-            ),
-        )
-
-    if nx is None or ny is None:
-        if resolved_latitude is not None and resolved_longitude is not None:
-            nx, ny = latlon_to_grid(resolved_latitude, resolved_longitude)
-        elif preset is not None:
-            nx, ny = latlon_to_grid(preset.latitude, preset.longitude)
-        else:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    "nx, ny를 직접 주거나 latitude, longitude, address "
-                    "또는 region 프리셋을 사용해야 합니다."
-                ),
-            )
-
-    try:
-        weather = await get_weekly_weather(
-            nx=nx,
-            ny=ny,
-            mid_land_reg_id=resolved_mid_land_reg_id,
-            mid_ta_reg_id=resolved_mid_ta_reg_id,
-        )
-    except PublicDataWeatherError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-    current_air_quality = None
-    current_air_quality_error = None
-    if resolved_latitude is not None and resolved_longitude is not None and address_hint:
-        try:
-            air_quality = await get_current_air_quality(
-                latitude=resolved_latitude,
-                longitude=resolved_longitude,
-                address_hint=_build_air_quality_address_hint(address_hint),
-            )
-        except AirQualityError as exc:
-            # 날씨 예보 자체는 계속 제공하고, 대기질만 비운다.
-            current_air_quality_error = str(exc)
-            air_quality = None
-
-        if air_quality is not None:
-            current_air_quality = AirQualityResponse.model_validate(air_quality.__dict__)
-
-    weather["current_air_quality"] = current_air_quality
-    weather["current_air_quality_error"] = current_air_quality_error
-    return WeeklyWeatherResponse.model_validate(weather)
+    return await service.get_weekly_weather(
+        region=region,
+        address=address,
+        address_type=address_type,
+        nx=nx,
+        ny=ny,
+        latitude=latitude,
+        longitude=longitude,
+        mid_land_reg_id=mid_land_reg_id,
+        mid_ta_reg_id=mid_ta_reg_id,
+    )
 
 
-def _build_air_quality_address_hint(address: str) -> str:
-    # 측정소 검색은 주소 일부만 넣는 편이 결과가 더 안정적인 경우가 많다.
-    tokens = [token for token in address.split() if token]
-    if len(tokens) >= 2:
-        return " ".join(tokens[:2])
-    return address
+@router.get("/load/current", response_model=CurrentLoadResponse)
+def read_current_load(
+    member_id: str = Query(DEMO_MEMBER_ID, description="회원 ID"),
+    washer_id: str = Query(DEMO_WASHER_ID, description="세탁기 ID"),
+    current_weight: float = Query(DEMO_CURRENT_LOAD_KG, gt=0, description="현재 적재량(kg)"),
+    washer_capacity: float = Query(DEMO_WASHER_CAPACITY_KG, gt=0, description="세탁기 용량(kg)"),
+    basket_sensor_weight_kg: float | None = Query(DEMO_SENSOR_LOAD_KG, ge=0, description="스마트 바구니 센서 무게(kg)"),
+    manual_refresh: bool = Query(False, description="수동 새로고침 여부"),
+) -> CurrentLoadResponse:
+    return service.get_current_load_snapshot(
+        member_id=member_id,
+        washer_id=washer_id,
+        current_weight=current_weight,
+        washer_capacity=washer_capacity,
+        basket_sensor_weight_kg=basket_sensor_weight_kg,
+        manual_refresh=manual_refresh,
+    )
 
-from datetime import datetime
-from fastapi import APIRouter
-from app.database import SessionLocal
 
-router = APIRouter(prefix="/api/laundry-timing", tags=["laundry-timing"])
+@router.get("/load/predict", response_model=FutureLoadPredictionResponse)
+async def predict_future_load(
+    member_id: str = Query(DEMO_MEMBER_ID, description="회원 ID"),
+    washer_id: str = Query(DEMO_WASHER_ID, description="세탁기 ID"),
+    current_weight: float = Query(DEMO_CURRENT_LOAD_KG, gt=0, description="현재 적재량(kg)"),
+    washer_capacity: float = Query(DEMO_WASHER_CAPACITY_KG, gt=0, description="세탁기 용량(kg)"),
+    household_size: int = Query(DEMO_HOUSEHOLD_SIZE, ge=1, description="가구원 수"),
+    hours_ahead: int = Query(48, ge=1, le=168, description="예측 시간 범위"),
+    weight_increase: float = Query(DEMO_WEIGHT_INCREASE_KG, ge=0, description="최근 증가한 세탁물 무게(kg)"),
+    urgent_clothing_count: int = Query(DEMO_URGENT_CLOTHING_COUNT, ge=0, description="긴급 세탁 의류 수"),
+    basket_sensor_weight_kg: float | None = Query(DEMO_SENSOR_LOAD_KG, ge=0, description="스마트 바구니 센서 무게(kg)"),
+    region: str | None = Query(DEMO_REGION, description="대표 지역 이름 또는 별칭"),
+    address: str | None = Query(None, description="상세 주소"),
+    address_type: str = Query("auto", description="주소 유형: auto, road, parcel"),
+    nx: int | None = Query(None, description="단기예보 격자 X 좌표"),
+    ny: int | None = Query(None, description="단기예보 격자 Y 좌표"),
+    latitude: float | None = Query(None, description="WGS84 위도"),
+    longitude: float | None = Query(None, description="WGS84 경도"),
+    mid_land_reg_id: str | None = Query(None, description="중기육상예보 지역 코드"),
+    mid_ta_reg_id: str | None = Query(None, description="중기기온예보 지역 코드"),
+) -> FutureLoadPredictionResponse:
+    return await service.predict_future_load(
+        member_id=member_id,
+        washer_id=washer_id,
+        current_weight=current_weight,
+        washer_capacity=washer_capacity,
+        household_size=household_size,
+        hours_ahead=hours_ahead,
+        weight_increase=weight_increase,
+        urgent_clothing_count=urgent_clothing_count,
+        basket_sensor_weight_kg=basket_sensor_weight_kg,
+        region=region,
+        address=address,
+        address_type=address_type,
+        nx=nx,
+        ny=ny,
+        latitude=latitude,
+        longitude=longitude,
+        mid_land_reg_id=mid_land_reg_id,
+        mid_ta_reg_id=mid_ta_reg_id,
+    )
 
 
-@router.get("/recommend")
-def recommend_laundry():
-    # 더미 데이터 (추후 DB/센서/날씨 API 연동 예정)
-    current_weight = 3.5
-    washer_capacity = 8.0
-    hours_since_last_wash = 48.0
-    weight_increase = 0.7
-    rain_expected = True
-    high_humidity = True
-
-    # 적재율 계산
-    load_ratio = round((current_weight / washer_capacity) * 100, 2)
-
-    # 날씨 요약
-    if rain_expected and high_humidity:
-        weather_summary = "비 예보 + 높은 습도"
-    elif rain_expected:
-        weather_summary = "비 예보"
-    elif high_humidity:
-        weather_summary = "높은 습도"
-    else:
-        weather_summary = "건조 환경 양호"
-
-    # 추천 로직
-    if load_ratio >= 80:
-        recommendation = "지금 세탁 추천"
-        reason = "현재 적재율이 높아 바로 세탁하는 것이 좋습니다."
-        recommend_level = "high"
-        status_image_key = "wash_now"
-
-    elif load_ratio >= 60 and rain_expected:
-        recommendation = "오늘 안에 세탁 추천"
-        reason = "적재량이 쌓였고 비 예보가 있어 미리 세탁하는 것이 좋습니다."
-        recommend_level = "high"
-        status_image_key = "wash_today"
-
-    elif weight_increase >= 1.0 and rain_expected:
-        recommendation = "곧 세탁 추천"
-        reason = "최근 적재량이 빠르게 증가하고 있고 날씨가 나빠질 수 있습니다."
-        recommend_level = "medium"
-        status_image_key = "wash_soon"
-
-    elif hours_since_last_wash >= 72:
-        recommendation = "세탁 권장"
-        reason = "마지막 세탁 후 시간이 많이 지났습니다."
-        recommend_level = "medium"
-        status_image_key = "wash_recommended"
-
-    else:
-        recommendation = "아직 세탁 필요 없음"
-        reason = "현재 적재량과 환경 기준으로 아직 세탁 필요성이 낮습니다."
-        recommend_level = "low"
-        status_image_key = "wait"
-
-    return {
-        "current_weight": current_weight,
-        "washer_capacity": washer_capacity,
-        "load_ratio": load_ratio,
-        "weight_increase": weight_increase,
-        "hours_since_last_wash": hours_since_last_wash,
-        "rain_expected": rain_expected,
-        "high_humidity": high_humidity,
-        "weather_summary": weather_summary,
-        "recommendation": recommendation,
-        "reason": reason,
-        "recommend_level": recommend_level,
-        "status_image_key": status_image_key
-    }
+@router.get("/recommend", response_model=LaundryRecommendationResponse)
+async def recommend_laundry_timing(
+    member_id: str = Query(DEMO_MEMBER_ID, description="회원 ID"),
+    washer_id: str = Query(DEMO_WASHER_ID, description="세탁기 ID"),
+    current_weight: float = Query(DEMO_CURRENT_LOAD_KG, gt=0, description="현재 적재량(kg)"),
+    washer_capacity: float = Query(DEMO_WASHER_CAPACITY_KG, gt=0, description="세탁기 용량(kg)"),
+    hours_since_last_wash: float = Query(DEMO_HOURS_SINCE_LAST_WASH, ge=0, description="마지막 세탁 후 경과 시간"),
+    weight_increase: float = Query(DEMO_WEIGHT_INCREASE_KG, ge=0, description="최근 증가한 세탁물 무게(kg)"),
+    household_size: int = Query(DEMO_HOUSEHOLD_SIZE, ge=1, description="가구원 수"),
+    urgent_clothing_count: int = Query(DEMO_URGENT_CLOTHING_COUNT, ge=0, description="긴급 세탁 의류 수"),
+    basket_sensor_weight_kg: float | None = Query(DEMO_SENSOR_LOAD_KG, ge=0, description="스마트 바구니 센서 무게(kg)"),
+    manual_refresh: bool = Query(False, description="수동 새로고침 여부"),
+    forecast_hours: int = Query(48, ge=1, le=168, description="미래 적재량 예측 범위"),
+    region: str | None = Query(DEMO_REGION, description="대표 지역 이름 또는 별칭"),
+    address: str | None = Query(None, description="상세 주소"),
+    address_type: str = Query("auto", description="주소 유형: auto, road, parcel"),
+    nx: int | None = Query(None, description="단기예보 격자 X 좌표"),
+    ny: int | None = Query(None, description="단기예보 격자 Y 좌표"),
+    latitude: float | None = Query(None, description="WGS84 위도"),
+    longitude: float | None = Query(None, description="WGS84 경도"),
+    mid_land_reg_id: str | None = Query(None, description="중기육상예보 지역 코드"),
+    mid_ta_reg_id: str | None = Query(None, description="중기기온예보 지역 코드"),
+) -> LaundryRecommendationResponse:
+    return await service.build_laundry_recommendation(
+        member_id=member_id,
+        washer_id=washer_id,
+        current_weight=current_weight,
+        washer_capacity=washer_capacity,
+        hours_since_last_wash=hours_since_last_wash,
+        weight_increase=weight_increase,
+        household_size=household_size,
+        urgent_clothing_count=urgent_clothing_count,
+        basket_sensor_weight_kg=basket_sensor_weight_kg,
+        manual_refresh=manual_refresh,
+        forecast_hours=forecast_hours,
+        region=region,
+        address=address,
+        address_type=address_type,
+        nx=nx,
+        ny=ny,
+        latitude=latitude,
+        longitude=longitude,
+        mid_land_reg_id=mid_land_reg_id,
+        mid_ta_reg_id=mid_ta_reg_id,
+    )
