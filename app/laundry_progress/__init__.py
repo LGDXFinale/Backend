@@ -1,2 +1,5 @@
-"""Features derived from '세탁 진행 상황 알림.md'."""
+"""Laundry progress tracking and status notification service."""
+
 from .router import router
+
+__all__ = ["router"]

@@ -1,4 +1,4 @@
-"""Features derived from '세탁 타이밍 추천 기능.md'."""
+"""Weather-based laundry timing recommendation service."""
 
 from .router import router
 
