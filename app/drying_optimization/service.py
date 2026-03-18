@@ -185,6 +185,7 @@ class DryingOptimizationService:
             recommendation=decision.recommendation,
             reason=decision.reason,
             recommend_level=decision.recommend_level,  # type: ignore[arg-type]
+            recommend_level_label=self._recommend_level_label(decision.recommend_level),
             status_image_key=decision.status_image_key,
             caution=decision.caution,
             energy_tip=decision.energy_tip,
@@ -211,11 +212,13 @@ class DryingOptimizationService:
                 weight_change_kg=moisture.weight_change_kg,
                 final_spin_rpm=moisture.final_spin_rpm,
                 odor_risk_level=moisture.odor_risk_level,  # type: ignore[arg-type]
+                odor_risk_level_label=self._odor_risk_level_label(moisture.odor_risk_level),
             ),
             environment_analysis=DryEnvironmentAnalysisResponse(
                 indoor_score=environment.indoor_score,
                 outdoor_score=environment.outdoor_score,
                 preferred_environment=environment.preferred_environment,
+                preferred_environment_label=self._preferred_environment_label(environment.preferred_environment),
                 summary=environment.summary,
             ),
             top_considerations=considerations,
@@ -598,4 +601,818 @@ def get_dry_recommendation(
         humidity_override=humidity_override,
         temperature_override=temperature_override,
         is_raining_override=is_raining_override,
+    )
+
+
+from typing import Any, Literal
+
+from app.drying_optimization.schemas import DryAirQualityResponse, DryWeatherDayResponse
+from app.utils import (
+    AirQualityError,
+    PublicDataWeatherError,
+    find_nearest_region_preset,
+    geocode_address,
+    get_current_air_quality,
+    get_weekly_weather,
+    latlon_to_grid,
+    resolve_region_preset,
+)
+
+
+DryAddressType = Literal["auto", "road", "parcel"]
+
+
+@dataclass(frozen=True)
+class ForecastDaySnapshot:
+    date: str
+    summary: str | None
+    precipitation_probability: int | None
+    relative_humidity: int | None
+    min_temp: float | None
+    max_temp: float | None
+    drying_friendly: bool
+
+
+@dataclass(frozen=True)
+class AirQualitySnapshot:
+    source: str
+    outdoor_safe: bool
+    station_name: str | None
+    station_address: str | None
+    measured_at: str | None
+    pm10: int | None
+    pm10_grade: str | None
+    pm25: int | None
+    pm25_grade: str | None
+    error: str | None
+
+
+@dataclass(frozen=True)
+class PublicWeatherSnapshot:
+    source: str
+    location_label: str
+    weather_main: str | None
+    weather_description: str | None
+    weather_summary: str
+    is_raining: bool
+    humidity: int
+    temperature: float
+    wind_speed_mps: float | None
+    weather_error: str | None
+    rain_expected: bool
+    high_humidity: bool
+    outdoor_drying_friendly: bool
+    favorable_day_offset: int | None
+    favorable_day_summary: str | None
+    air_quality: AirQualitySnapshot | None
+    forecast_days: list[ForecastDaySnapshot]
+
+
+@dataclass(frozen=True)
+class ResolvedDryingContext:
+    location_label: str
+    address_hint: str | None
+    latitude: float | None
+    longitude: float | None
+    nx: int
+    ny: int
+    mid_land_reg_id: str
+    mid_ta_reg_id: str
+
+
+class PublicDataDryingOptimizationService:
+    async def build_recommendation(
+        self,
+        *,
+        member_id: str,
+        washer_id: str,
+        region: str | None,
+        address: str | None,
+        address_type: str,
+        nx: int | None,
+        ny: int | None,
+        latitude: float | None,
+        longitude: float | None,
+        mid_land_reg_id: str | None,
+        mid_ta_reg_id: str | None,
+        laundry_weight_kg: float,
+        has_delicate_items: bool,
+        needs_fast_dry: bool,
+        has_outdoor_space: bool,
+        has_dryer: bool,
+        odor_sensitive: bool,
+        indoor_humidity: int,
+        indoor_temperature: float,
+        airflow_level: int,
+        dehumidifier_on: bool,
+        final_spin_rpm: int,
+        pre_spin_weight_kg: float | None,
+        post_spin_weight_kg: float | None,
+    ) -> DryRecommendationResponse:
+        self._validate_inputs(
+            region=region,
+            address=address,
+            address_type=address_type,
+            nx=nx,
+            ny=ny,
+            latitude=latitude,
+            longitude=longitude,
+            laundry_weight_kg=laundry_weight_kg,
+            indoor_humidity=indoor_humidity,
+            airflow_level=airflow_level,
+            final_spin_rpm=final_spin_rpm,
+            pre_spin_weight_kg=pre_spin_weight_kg,
+            post_spin_weight_kg=post_spin_weight_kg,
+        )
+        context = await self._resolve_context(
+            region=region,
+            address=address,
+            address_type=address_type,
+            nx=nx,
+            ny=ny,
+            latitude=latitude,
+            longitude=longitude,
+            mid_land_reg_id=mid_land_reg_id,
+            mid_ta_reg_id=mid_ta_reg_id,
+        )
+        weather = await self._get_weather_snapshot(context)
+        indoor = IndoorEnvironment(
+            humidity=indoor_humidity,
+            temperature=indoor_temperature,
+            airflow_level=airflow_level,
+            dehumidifier_on=dehumidifier_on,
+        )
+        moisture = DryingOptimizationService()._estimate_moisture(
+            laundry_weight_kg=laundry_weight_kg,
+            final_spin_rpm=final_spin_rpm,
+            pre_spin_weight_kg=pre_spin_weight_kg,
+            post_spin_weight_kg=post_spin_weight_kg,
+            weather=weather,
+            indoor=indoor,
+            odor_sensitive=odor_sensitive,
+        )
+        environment = self._analyze_environment(
+            weather=weather,
+            indoor=indoor,
+            has_outdoor_space=has_outdoor_space,
+        )
+        decision = self._build_decision(
+            weather=weather,
+            moisture=moisture,
+            environment=environment,
+            has_delicate_items=has_delicate_items,
+            needs_fast_dry=needs_fast_dry,
+            has_outdoor_space=has_outdoor_space,
+            has_dryer=has_dryer,
+        )
+        considerations = self._build_considerations(
+            weather=weather,
+            indoor=indoor,
+            moisture=moisture,
+            environment=environment,
+            laundry_weight_kg=laundry_weight_kg,
+            has_delicate_items=has_delicate_items,
+            needs_fast_dry=needs_fast_dry,
+        )
+        action_items = self._build_action_items(
+            decision=decision,
+            weather=weather,
+            indoor=indoor,
+            moisture=moisture,
+            has_delicate_items=has_delicate_items,
+            has_dryer=has_dryer,
+        )
+        return DryRecommendationResponse(
+            generated_at=datetime.now().isoformat(timespec="seconds"),
+            member_id=member_id,
+            washer_id=washer_id,
+            dry_rec_id="DR001",
+            dry_rec_time=decision.time_minutes,
+            dry_rec_method=decision.method,
+            dry_rec_method_name=METHOD_MAP[decision.method],
+            recommendation=decision.recommendation,
+            reason=decision.reason,
+            recommend_level=decision.recommend_level,  # type: ignore[arg-type]
+            recommend_level_label=self._recommend_level_label(decision.recommend_level),
+            status_image_key=decision.status_image_key,
+            caution=decision.caution,
+            energy_tip=decision.energy_tip,
+            weather_info=self._build_weather_response(weather),
+            indoor_environment=IndoorEnvironmentResponse(
+                indoor_humidity=indoor.humidity,
+                indoor_temperature=indoor.temperature,
+                airflow_level=indoor.airflow_level,
+                dehumidifier_on=indoor.dehumidifier_on,
+            ),
+            moisture_estimation=MoistureEstimationResponse(
+                estimated_moisture_percent=moisture.estimated_moisture_percent,
+                residual_water_kg=moisture.residual_water_kg,
+                weight_change_kg=moisture.weight_change_kg,
+                final_spin_rpm=moisture.final_spin_rpm,
+                odor_risk_level=moisture.odor_risk_level,  # type: ignore[arg-type]
+                odor_risk_level_label=self._odor_risk_level_label(moisture.odor_risk_level),
+            ),
+            environment_analysis=DryEnvironmentAnalysisResponse(
+                indoor_score=environment.indoor_score,
+                outdoor_score=environment.outdoor_score,
+                preferred_environment=environment.preferred_environment,
+                preferred_environment_label=self._preferred_environment_label(environment.preferred_environment),
+                summary=environment.summary,
+            ),
+            top_considerations=considerations,
+            action_items=action_items,
+        )
+
+    def _build_weather_response(self, weather: PublicWeatherSnapshot) -> DryWeatherInfoResponse:
+        air_quality = None
+        if weather.air_quality is not None:
+            air_quality = DryAirQualityResponse(
+                source=weather.air_quality.source,
+                source_label=self._source_label(weather.air_quality.source),
+                outdoor_safe=weather.air_quality.outdoor_safe,
+                outdoor_safe_label="실외 건조 가능" if weather.air_quality.outdoor_safe else "실외 건조 비추천",
+                station_name=weather.air_quality.station_name,
+                station_address=weather.air_quality.station_address,
+                measured_at=weather.air_quality.measured_at,
+                pm10=weather.air_quality.pm10,
+                pm10_grade=weather.air_quality.pm10_grade,
+                pm25=weather.air_quality.pm25,
+                pm25_grade=weather.air_quality.pm25_grade,
+                error=weather.air_quality.error,
+            )
+        return DryWeatherInfoResponse(
+            source=weather.source,
+            source_label=self._source_label(weather.source),
+            location_label=weather.location_label,
+            weather_summary=weather.weather_summary,
+            weather_main=weather.weather_main,
+            weather_main_label=self._weather_main_label(weather.weather_main),
+            weather_description=weather.weather_description,
+            is_raining=weather.is_raining,
+            humidity=weather.humidity,
+            temperature=weather.temperature,
+            wind_speed_mps=weather.wind_speed_mps,
+            weather_error=weather.weather_error,
+            rain_expected=weather.rain_expected,
+            high_humidity=weather.high_humidity,
+            outdoor_drying_friendly=weather.outdoor_drying_friendly,
+            favorable_day_offset=weather.favorable_day_offset,
+            favorable_day_summary=weather.favorable_day_summary,
+            air_quality=air_quality,
+            forecast_days=[
+                DryWeatherDayResponse(
+                    date=day.date,
+                    summary=day.summary,
+                    precipitation_probability=day.precipitation_probability,
+                    relative_humidity=day.relative_humidity,
+                    min_temp=day.min_temp,
+                    max_temp=day.max_temp,
+                    drying_friendly=day.drying_friendly,
+                    drying_friendly_label="실외 건조에 유리함" if day.drying_friendly else "실외 건조에 불리함",
+                )
+                for day in weather.forecast_days
+            ],
+        )
+
+    async def _resolve_context(
+        self,
+        *,
+        region: str | None,
+        address: str | None,
+        address_type: str,
+        nx: int | None,
+        ny: int | None,
+        latitude: float | None,
+        longitude: float | None,
+        mid_land_reg_id: str | None,
+        mid_ta_reg_id: str | None,
+    ) -> ResolvedDryingContext:
+        preset = None
+        resolved_latitude = latitude
+        resolved_longitude = longitude
+        address_hint = address
+        if region:
+            preset = resolve_region_preset(region)
+            if preset is None:
+                raise HTTPException(status_code=404, detail=f"지원하지 않는 지역입니다: {region}")
+        if address and (resolved_latitude is None or resolved_longitude is None):
+            geocoded = await geocode_address(address=address, address_type=address_type)  # type: ignore[arg-type]
+            resolved_latitude = geocoded.latitude
+            resolved_longitude = geocoded.longitude
+            address_hint = geocoded.refined_text or geocoded.address
+        if preset is None and resolved_latitude is not None and resolved_longitude is not None:
+            preset = find_nearest_region_preset(resolved_latitude, resolved_longitude)
+            if address_hint is None:
+                address_hint = preset.name
+        resolved_mid_land_reg_id = mid_land_reg_id or (preset.mid_land_reg_id if preset else None)
+        resolved_mid_ta_reg_id = mid_ta_reg_id or (preset.mid_ta_reg_id if preset else None)
+        if resolved_mid_land_reg_id is None or resolved_mid_ta_reg_id is None:
+            raise HTTPException(
+                status_code=422,
+                detail="mid_land_reg_id와 mid_ta_reg_id를 직접 주거나 region, latitude/longitude, address 중 하나를 사용해야 합니다.",
+            )
+        if nx is None or ny is None:
+            if resolved_latitude is not None and resolved_longitude is not None:
+                nx, ny = latlon_to_grid(resolved_latitude, resolved_longitude)
+            elif preset is not None:
+                nx, ny = latlon_to_grid(preset.latitude, preset.longitude)
+                resolved_latitude = preset.latitude
+                resolved_longitude = preset.longitude
+            else:
+                raise HTTPException(
+                    status_code=422,
+                    detail="nx, ny를 직접 주거나 latitude, longitude, address, region 중 하나를 사용해야 합니다.",
+                )
+        if address_hint is None and preset is not None:
+            address_hint = preset.name
+        return ResolvedDryingContext(
+            location_label=address_hint or (preset.name if preset else "기본 지역"),
+            address_hint=address_hint,
+            latitude=resolved_latitude,
+            longitude=resolved_longitude,
+            nx=nx,
+            ny=ny,
+            mid_land_reg_id=resolved_mid_land_reg_id,
+            mid_ta_reg_id=resolved_mid_ta_reg_id,
+        )
+
+    async def _get_weather_snapshot(self, context: ResolvedDryingContext) -> PublicWeatherSnapshot:
+        try:
+            weekly_weather = await get_weekly_weather(
+                nx=context.nx,
+                ny=context.ny,
+                mid_land_reg_id=context.mid_land_reg_id,
+                mid_ta_reg_id=context.mid_ta_reg_id,
+            )
+        except PublicDataWeatherError as exc:
+            return self._build_fallback_weather(location_label=context.location_label, weather_error=str(exc))
+        air_quality, air_quality_error = await self._get_air_quality(context)
+        forecast_days = self._build_forecast_days(weekly_weather.get("days", []))
+        if not forecast_days:
+            return self._build_fallback_weather(
+                location_label=context.location_label,
+                weather_error="예보 응답에 사용할 수 있는 일별 데이터가 없습니다.",
+                air_quality=air_quality,
+                air_quality_error=air_quality_error,
+            )
+        near_term_days = forecast_days[:3]
+        rain_expected = any(
+            (day.precipitation_probability or 0) >= 60 or self._summary_mentions_precipitation(day.summary)
+            for day in near_term_days
+        )
+        high_humidity = any((day.relative_humidity or 0) >= 75 for day in near_term_days)
+        favorable_day_offset, favorable_day_summary = self._find_favorable_day(forecast_days)
+        air_quality_safe = True if air_quality is None else air_quality.outdoor_safe
+        weather_summary = self._build_weather_summary(
+            rain_expected=rain_expected,
+            high_humidity=high_humidity,
+            air_quality_safe=air_quality_safe,
+            favorable_day_offset=favorable_day_offset,
+            favorable_day_summary=favorable_day_summary,
+        )
+        return PublicWeatherSnapshot(
+            source="public_data",
+            location_label=context.location_label,
+            weather_main="Forecast",
+            weather_description=favorable_day_summary or weather_summary,
+            weather_summary=weather_summary,
+            is_raining=rain_expected,
+            humidity=self._representative_humidity(near_term_days),
+            temperature=self._representative_temperature(near_term_days),
+            wind_speed_mps=None,
+            weather_error=air_quality_error,
+            rain_expected=rain_expected,
+            high_humidity=high_humidity,
+            outdoor_drying_friendly=favorable_day_offset == 0 and air_quality_safe,
+            favorable_day_offset=favorable_day_offset,
+            favorable_day_summary=favorable_day_summary,
+            air_quality=air_quality,
+            forecast_days=forecast_days,
+        )
+
+    async def _get_air_quality(
+        self,
+        context: ResolvedDryingContext,
+    ) -> tuple[AirQualitySnapshot | None, str | None]:
+        if context.latitude is None or context.longitude is None or not context.address_hint:
+            return None, None
+        try:
+            observation = await get_current_air_quality(
+                latitude=context.latitude,
+                longitude=context.longitude,
+                address_hint=self._build_air_quality_address_hint(context.address_hint),
+            )
+        except AirQualityError as exc:
+            return None, str(exc)
+        if observation is None:
+            return None, None
+        return (
+            AirQualitySnapshot(
+                source=observation.source,
+                outdoor_safe=self._is_air_quality_safe(
+                    pm10_grade=observation.pm10_grade,
+                    pm25_grade=observation.pm25_grade,
+                ),
+                station_name=observation.station_name,
+                station_address=observation.station_address,
+                measured_at=observation.measured_at,
+                pm10=observation.pm10,
+                pm10_grade=observation.pm10_grade,
+                pm25=observation.pm25,
+                pm25_grade=observation.pm25_grade,
+                error=None,
+            ),
+            None,
+        )
+
+    def _build_forecast_days(self, days: list[dict[str, Any]]) -> list[ForecastDaySnapshot]:
+        forecast_days: list[ForecastDaySnapshot] = []
+        for item in days[:7]:
+            summary = item.get("summary")
+            rain_probability = self._to_int(item.get("precipitation_probability"))
+            humidity = self._to_int(item.get("relative_humidity"))
+            drying_friendly = (
+                (rain_probability or 0) <= 30
+                and (humidity or 60) <= 65
+                and not self._summary_mentions_precipitation(summary)
+            )
+            forecast_days.append(
+                ForecastDaySnapshot(
+                    date=str(item.get("date")),
+                    summary=str(summary) if summary is not None else None,
+                    precipitation_probability=rain_probability,
+                    relative_humidity=humidity,
+                    min_temp=self._to_float(item.get("min_temp")),
+                    max_temp=self._to_float(item.get("max_temp")),
+                    drying_friendly=drying_friendly,
+                )
+            )
+        return forecast_days
+
+    def _find_favorable_day(self, forecast_days: list[ForecastDaySnapshot]) -> tuple[int | None, str | None]:
+        for offset, day in enumerate(forecast_days):
+            if day.drying_friendly:
+                return offset, day.summary or "강수확률과 습도가 안정적인 날"
+        return None, None
+
+    def _representative_humidity(self, days: list[ForecastDaySnapshot]) -> int:
+        values = [day.relative_humidity for day in days if day.relative_humidity is not None]
+        return round(sum(values) / len(values)) if values else 60
+
+    def _representative_temperature(self, days: list[ForecastDaySnapshot]) -> float:
+        values: list[float] = []
+        for day in days:
+            if day.min_temp is not None and day.max_temp is not None:
+                values.append(round((day.min_temp + day.max_temp) / 2, 1))
+            elif day.max_temp is not None:
+                values.append(day.max_temp)
+            elif day.min_temp is not None:
+                values.append(day.min_temp)
+        return round(sum(values) / len(values), 1) if values else 22.0
+
+    def _build_weather_summary(
+        self,
+        *,
+        rain_expected: bool,
+        high_humidity: bool,
+        air_quality_safe: bool,
+        favorable_day_offset: int | None,
+        favorable_day_summary: str | None,
+    ) -> str:
+        if not air_quality_safe and rain_expected:
+            return "가까운 시일 내 비 예보가 있고 대기질도 좋지 않아 실외 건조가 불리합니다."
+        if not air_quality_safe:
+            return "대기질이 좋지 않아 실외 건조는 보수적으로 판단하는 편이 안전합니다."
+        if rain_expected and high_humidity:
+            return "가까운 시일 내 비 예보와 높은 습도가 함께 보여 실외 건조 효율이 낮습니다."
+        if rain_expected:
+            return "가까운 시일 내 비 예보가 있어 실외 건조보다는 실내 건조가 안정적입니다."
+        if high_humidity:
+            return "습도가 높아 자연 건조 시간이 길어질 수 있습니다."
+        if favorable_day_offset is not None and favorable_day_offset > 0:
+            return f"{favorable_day_offset}일 후 건조 여건이 더 좋아질 전망이라 혼합건조가 유리할 수 있습니다."
+        return favorable_day_summary or "가까운 시일 내 실외 건조 여건이 비교적 안정적입니다."
+
+    def _build_fallback_weather(
+        self,
+        *,
+        location_label: str,
+        weather_error: str,
+        air_quality: AirQualitySnapshot | None = None,
+        air_quality_error: str | None = None,
+    ) -> PublicWeatherSnapshot:
+        final_error = weather_error if air_quality_error is None else f"{weather_error} / {air_quality_error}"
+        return PublicWeatherSnapshot(
+            source="fallback",
+            location_label=location_label,
+            weather_main="Fallback",
+            weather_description="보수적 기본값",
+            weather_summary="실시간 예보를 확인하지 못해 실내건조 쪽으로 보수적으로 판단했습니다.",
+            is_raining=True,
+            humidity=70,
+            temperature=21.0,
+            wind_speed_mps=None,
+            weather_error=final_error,
+            rain_expected=True,
+            high_humidity=True,
+            outdoor_drying_friendly=False,
+            favorable_day_offset=None,
+            favorable_day_summary=None,
+            air_quality=air_quality,
+            forecast_days=[],
+        )
+
+    def _analyze_environment(
+        self,
+        *,
+        weather: PublicWeatherSnapshot,
+        indoor: IndoorEnvironment,
+        has_outdoor_space: bool,
+    ) -> EnvironmentAnalysis:
+        indoor_score = 55 + indoor.airflow_level // 3
+        indoor_score -= max(indoor.humidity - 60, 0) // 2
+        indoor_score += 12 if indoor.dehumidifier_on else 0
+        outdoor_score = 62
+        outdoor_score -= 28 if weather.rain_expected else 0
+        outdoor_score -= max(weather.humidity - 60, 0) // 2
+        outdoor_score += 10 if weather.temperature >= 20 else 0
+        outdoor_score += 12 if weather.outdoor_drying_friendly else 0
+        if weather.air_quality is not None and not weather.air_quality.outdoor_safe:
+            outdoor_score -= 30
+        if weather.favorable_day_offset == 1:
+            outdoor_score += 8
+        elif weather.favorable_day_offset in {2, 3}:
+            outdoor_score += 4
+        if not has_outdoor_space:
+            outdoor_score = 0
+        indoor_score = max(0, min(indoor_score, 100))
+        outdoor_score = max(0, min(outdoor_score, 100))
+        if not has_outdoor_space or (weather.air_quality and not weather.air_quality.outdoor_safe) or weather.rain_expected:
+            return EnvironmentAnalysis(indoor_score, outdoor_score, "indoor", "실외 조건보다 실내 조건이 안정적이라 실내 중심 건조가 적합합니다.")
+        if weather.favorable_day_offset is not None and 0 < weather.favorable_day_offset <= 2:
+            return EnvironmentAnalysis(indoor_score, outdoor_score, "mixed", "가까운 시일 내 실외 여건이 나아질 수 있어 실내 후 실외로 넘기는 혼합건조가 적합합니다.")
+        if outdoor_score >= indoor_score + 10:
+            return EnvironmentAnalysis(indoor_score, outdoor_score, "outdoor", "예보와 대기질을 종합하면 실외 자연건조 조건이 더 좋습니다.")
+        if indoor_score >= outdoor_score + 10:
+            return EnvironmentAnalysis(indoor_score, outdoor_score, "indoor", "실내 환경이 더 안정적이라 실내건조가 유리합니다.")
+        return EnvironmentAnalysis(indoor_score, outdoor_score, "mixed", "실내와 실외 조건이 비슷해 혼합건조로 리스크를 나누는 편이 좋습니다.")
+
+    def _build_decision(
+        self,
+        *,
+        weather: PublicWeatherSnapshot,
+        moisture: MoistureEstimation,
+        environment: EnvironmentAnalysis,
+        has_delicate_items: bool,
+        needs_fast_dry: bool,
+        has_outdoor_space: bool,
+        has_dryer: bool,
+    ) -> DryDecision:
+        outdoor_unavailable = (
+            not has_outdoor_space
+            or weather.rain_expected
+            or (weather.air_quality is not None and not weather.air_quality.outdoor_safe)
+        )
+        if has_dryer and (needs_fast_dry or moisture.odor_risk_level == "high" or (outdoor_unavailable and moisture.estimated_moisture_percent >= 25)):
+            return DryDecision(3, 70 if moisture.estimated_moisture_percent >= 25 else 55, "건조기 사용 추천", "빠른 건조가 필요하거나 실외 여건이 좋지 않아 건조기가 가장 안정적인 선택입니다.", "high", "dryer_recommended", "민감 의류가 있으면 저온 코스나 짧은 코스를 우선 확인해 주세요.", "탈수를 충분히 한 뒤 건조기를 사용하면 전체 건조 시간을 줄일 수 있습니다.")
+        if environment.preferred_environment == "outdoor" and has_outdoor_space and not has_delicate_items:
+            return DryDecision(2, 120 if moisture.estimated_moisture_percent < 25 else 150, "자연건조 추천", "단기예보와 중기예보, 대기질을 함께 보면 실외 건조 조건이 가장 좋습니다.", "medium", "outdoor_recommended", "대기질과 강수 예보는 변할 수 있으니 건조 중간에 한 번 더 확인해 주세요.", "환기와 통풍이 좋은 위치를 쓰면 자연건조 시간을 더 줄일 수 있습니다.")
+        if environment.preferred_environment == "mixed" and has_outdoor_space:
+            return DryDecision(4, 160, "혼합건조 추천", "가까운 시일 내 실외 여건이 나아질 가능성이 있어 실내에서 시작한 뒤 실외로 넘기는 방식이 효율적입니다.", "high" if needs_fast_dry else "medium", "mixed_recommended", "날씨와 대기질이 실제로 좋아지는지 확인한 뒤 실외로 옮겨 주세요.", "초반 수분만 실내에서 줄이고 이후 자연건조로 전환하면 전력 사용을 아낄 수 있습니다.")
+        return DryDecision(1, 180 if moisture.estimated_moisture_percent < 25 else 220, "실내건조 추천", "현재 예보나 대기질 기준으로는 실내 환경이 더 안정적입니다.", "medium", "indoor_recommended", "실내 습도가 높으면 제습기나 환기를 함께 사용해 냄새 위험을 줄여 주세요.", "선풍기나 제습기를 함께 쓰면 실내건조 시간을 줄일 수 있습니다.")
+
+    def _build_considerations(
+        self,
+        *,
+        weather: PublicWeatherSnapshot,
+        indoor: IndoorEnvironment,
+        moisture: MoistureEstimation,
+        environment: EnvironmentAnalysis,
+        laundry_weight_kg: float,
+        has_delicate_items: bool,
+        needs_fast_dry: bool,
+    ) -> list[DryingConsiderationResponse]:
+        weather_details = [
+            f"가까운 시일 내 비 예보 여부: {'있음' if weather.rain_expected else '없음'}",
+            f"대표 실외 습도: {weather.humidity}%",
+        ]
+        if weather.favorable_day_offset is not None:
+            weather_details.append(f"실외 건조 유리 시점: {weather.favorable_day_offset}일 후")
+        if weather.air_quality is not None:
+            weather_details.append(f"대기질 기준 실외 건조 가능 여부: {'가능' if weather.air_quality.outdoor_safe else '비추천'}")
+        considerations = [
+            DryingConsiderationResponse(
+                category="세탁물 수분 상태",
+                score=min(100, moisture.estimated_moisture_percent * 2),
+                summary=f"잔여 수분은 약 {moisture.estimated_moisture_percent}%로 추정됩니다.",
+                details=[
+                    f"추정 잔여 수분 무게는 {moisture.residual_water_kg:.2f}kg입니다.",
+                    f"최종 탈수 RPM은 {moisture.final_spin_rpm}입니다.",
+                    f"냄새 위험도는 {moisture.odor_risk_level}입니다.",
+                ],
+            ),
+            DryingConsiderationResponse(
+                category="예보와 대기질",
+                score=max(environment.indoor_score, environment.outdoor_score),
+                summary=weather.weather_summary,
+                details=weather_details,
+            ),
+            DryingConsiderationResponse(
+                category="건조 조건",
+                score=70 if has_delicate_items else min(100, round(laundry_weight_kg * 18)),
+                summary=environment.summary,
+                details=[
+                    f"세탁물 무게는 {laundry_weight_kg:.1f}kg입니다.",
+                    f"민감 의류 포함 여부: {'예' if has_delicate_items else '아니오'}",
+                    f"빠른 건조 필요 여부: {'예' if needs_fast_dry else '아니오'}",
+                    f"실내 습도는 {indoor.humidity}%입니다.",
+                ],
+            ),
+        ]
+        return sorted(considerations, key=lambda item: item.score, reverse=True)
+
+    def _build_action_items(
+        self,
+        *,
+        decision: DryDecision,
+        weather: PublicWeatherSnapshot,
+        indoor: IndoorEnvironment,
+        moisture: MoistureEstimation,
+        has_delicate_items: bool,
+        has_dryer: bool,
+    ) -> list[str]:
+        actions: list[str] = []
+        if decision.method == 3:
+            actions.append("건조기 사용 전 세탁물을 한 번 털어 넣으면 주름과 뭉침을 줄이는 데 도움이 됩니다.")
+        elif decision.method == 4:
+            actions.append("초반에는 실내에서 물기를 줄이고, 예보와 대기질이 좋아지면 실외로 옮겨 주세요.")
+        elif decision.method == 2:
+            actions.append("강수 확률과 대기질을 다시 한 번 확인한 뒤 통풍이 좋은 위치에 널어 주세요.")
+        else:
+            actions.append("실내건조 시 선풍기나 환기를 함께 사용하면 건조 시간을 줄일 수 있습니다.")
+        if indoor.humidity >= 70 and decision.method != 3:
+            actions.append("실내 습도가 높으니 제습기나 추가 환기를 함께 사용하는 편이 좋습니다.")
+        if has_delicate_items:
+            actions.append("민감 의류는 열풍보다 그늘 건조나 짧은 코스를 우선 고려해 주세요.")
+        if moisture.odor_risk_level == "high":
+            actions.append("냄새 위험이 높으니 세탁 직후 지체 없이 바로 건조를 시작해 주세요.")
+        if weather.air_quality is not None and not weather.air_quality.outdoor_safe:
+            actions.append("대기질이 좋지 않아 오늘은 실외 건조를 피하는 편이 안전합니다.")
+        if not has_dryer and decision.method == 3:
+            actions.append("건조기가 없다면 실내 환기와 제습기를 함께 사용해 대체해 주세요.")
+        return actions
+
+    def _validate_inputs(
+        self,
+        *,
+        region: str | None,
+        address: str | None,
+        address_type: str,
+        nx: int | None,
+        ny: int | None,
+        latitude: float | None,
+        longitude: float | None,
+        laundry_weight_kg: float,
+        indoor_humidity: int,
+        airflow_level: int,
+        final_spin_rpm: int,
+        pre_spin_weight_kg: float | None,
+        post_spin_weight_kg: float | None,
+    ) -> None:
+        if not any(value is not None for value in (region, address, nx, ny, latitude, longitude)):
+            raise ValueError("region, address, nx/ny, latitude/longitude 중 하나는 필요합니다.")
+        if address_type not in {"auto", "road", "parcel"}:
+            raise ValueError("address_type은 auto, road, parcel 중 하나여야 합니다.")
+        if laundry_weight_kg <= 0:
+            raise ValueError("laundry_weight_kg는 0보다 커야 합니다.")
+        if not 0 <= indoor_humidity <= 100:
+            raise ValueError("indoor_humidity는 0 이상 100 이하여야 합니다.")
+        if not 0 <= airflow_level <= 100:
+            raise ValueError("airflow_level은 0 이상 100 이하여야 합니다.")
+        if final_spin_rpm < 0:
+            raise ValueError("final_spin_rpm은 음수일 수 없습니다.")
+        if pre_spin_weight_kg is not None and post_spin_weight_kg is not None and pre_spin_weight_kg < post_spin_weight_kg:
+            raise ValueError("pre_spin_weight_kg는 post_spin_weight_kg보다 작을 수 없습니다.")
+
+    def _build_air_quality_address_hint(self, address: str) -> str:
+        tokens = [token for token in address.split() if token]
+        return " ".join(tokens[:2]) if len(tokens) >= 2 else address
+
+    def _summary_mentions_precipitation(self, summary: str | None) -> bool:
+        return bool(summary) and any(keyword in summary for keyword in ("비", "눈", "소나기", "빗방울"))
+
+    def _is_air_quality_safe(self, *, pm10_grade: str | None, pm25_grade: str | None) -> bool:
+        unsafe_grades = {"나쁨", "매우나쁨", "bad", "very_bad", "3", "4"}
+        return (pm10_grade not in unsafe_grades) and (pm25_grade not in unsafe_grades)
+
+    def _source_label(self, source: str) -> str:
+        mapping = {
+            "air_korea": "에어코리아",
+            "public_data": "공공데이터포털",
+            "fallback": "기본 대체 데이터",
+            "openweather": "OpenWeather",
+            "manual_override": "수동 입력값",
+        }
+        return mapping.get(source, source)
+
+    def _weather_main_label(self, weather_main: str | None) -> str | None:
+        if weather_main is None:
+            return None
+        mapping = {
+            "Forecast": "예보 기반",
+            "Fallback": "기본 대체 데이터",
+            "Clear": "맑음",
+            "Clouds": "흐림",
+            "Rain": "비",
+            "Drizzle": "이슬비",
+            "Thunderstorm": "뇌우",
+            "Snow": "눈",
+            "Override": "수동 입력값",
+        }
+        return mapping.get(weather_main, weather_main)
+
+    def _recommend_level_label(self, level: str) -> str:
+        mapping = {"low": "낮음", "medium": "보통", "high": "높음"}
+        return mapping.get(level, level)
+
+    def _odor_risk_level_label(self, level: str) -> str:
+        mapping = {"low": "낮음", "medium": "보통", "high": "높음"}
+        return mapping.get(level, level)
+
+    def _preferred_environment_label(self, environment: str) -> str:
+        mapping = {
+            "indoor": "실내 중심",
+            "outdoor": "실외 중심",
+            "mixed": "혼합 건조",
+        }
+        return mapping.get(environment, environment)
+
+    @staticmethod
+    def _to_int(value: Any) -> int | None:
+        try:
+            return int(float(str(value)))
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _to_float(value: Any) -> float | None:
+        try:
+            return float(str(value))
+        except (TypeError, ValueError):
+            return None
+
+
+async def get_dry_recommendation(
+    *,
+    member_id: str = DEMO_MEMBER_ID,
+    washer_id: str = DEMO_WASHER_ID,
+    region: str | None = None,
+    address: str | None = None,
+    address_type: str = "auto",
+    nx: int | None = None,
+    ny: int | None = None,
+    latitude: float | None = None,
+    longitude: float | None = None,
+    mid_land_reg_id: str | None = None,
+    mid_ta_reg_id: str | None = None,
+    laundry_weight_kg: float = DEMO_DRY_LAUNDRY_WEIGHT_KG,
+    has_delicate_items: bool = DEMO_HAS_DELICATE_ITEMS,
+    needs_fast_dry: bool = DEMO_NEEDS_FAST_DRY,
+    has_outdoor_space: bool = DEMO_HAS_OUTDOOR_SPACE,
+    has_dryer: bool = DEMO_HAS_DRYER,
+    odor_sensitive: bool = DEMO_ODOR_SENSITIVE,
+    indoor_humidity: int = DEMO_INDOOR_HUMIDITY,
+    indoor_temperature: float = DEMO_INDOOR_TEMPERATURE,
+    airflow_level: int = DEMO_AIRFLOW_LEVEL,
+    dehumidifier_on: bool = DEMO_DEHUMIDIFIER_ON,
+    final_spin_rpm: int = DEMO_FINAL_SPIN_RPM,
+    pre_spin_weight_kg: float | None = None,
+    post_spin_weight_kg: float | None = None,
+) -> DryRecommendationResponse:
+    service = PublicDataDryingOptimizationService()
+    return await service.build_recommendation(
+        member_id=member_id,
+        washer_id=washer_id,
+        region=region,
+        address=address,
+        address_type=address_type,
+        nx=nx,
+        ny=ny,
+        latitude=latitude,
+        longitude=longitude,
+        mid_land_reg_id=mid_land_reg_id,
+        mid_ta_reg_id=mid_ta_reg_id,
+        laundry_weight_kg=laundry_weight_kg,
+        has_delicate_items=has_delicate_items,
+        needs_fast_dry=needs_fast_dry,
+        has_outdoor_space=has_outdoor_space,
+        has_dryer=has_dryer,
+        odor_sensitive=odor_sensitive,
+        indoor_humidity=indoor_humidity,
+        indoor_temperature=indoor_temperature,
+        airflow_level=airflow_level,
+        dehumidifier_on=dehumidifier_on,
+        final_spin_rpm=final_spin_rpm,
+        pre_spin_weight_kg=pre_spin_weight_kg,
+        post_spin_weight_kg=post_spin_weight_kg,
     )
