@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-DEFAULT_DEMO_SCENARIO = "single_household"
+DEFAULT_DEMO_SCENARIO = "dual_income_couple"
 
 
 @dataclass(frozen=True)
@@ -40,89 +40,52 @@ class DemoScenarioDefaults:
 
 
 DEMO_SCENARIOS: dict[str, DemoScenarioDefaults] = {
-    "single_household": DemoScenarioDefaults(
-        key="single_household",
-        label="바쁜 1인 가구",
+    "dual_income_couple": DemoScenarioDefaults(
+        key="dual_income_couple",
+        label="20~40대 맞벌이 부부",
         summary=(
-            "세탁 주기가 조금 길어져 빨래가 한 번에 모였고, 급하게 입어야 하는 옷이 있어 "
-            "빠른 세탁과 실내 중심 건조가 필요한 1인 가구 시나리오입니다."
+            "바쁜 생활 패턴으로 세탁 주기가 조금 길어져 빨래가 한 번에 쌓이고, "
+            "급하게 세탁해야 하는 옷이 생기며, 세탁과 건조를 빠르게 처리해야 하는 상황을 가정한 시나리오입니다."
         ),
-        member_id="member-single-001",
-        washer_id="washer-single-001",
-        wash_status_id="wash-status-single-001",
-        washer_capacity_kg=9.0,
-        household_size=1,
+        member_id="member-001",
+        washer_id="washer-001",
+        wash_status_id="wash-status-001",
+        washer_capacity_kg=10.0,
+        household_size=2,
         region="seoul",
         city="Seoul",
-        current_load_kg=3.1,
-        sensor_load_kg=3.1,
-        weight_increase_kg=0.8,
-        hours_since_last_wash=60.0,
-        urgent_clothing_count=1,
-        load_variation_kg=0.2,
-        cycle_elapsed_minutes=28,
-        base_cycle_minutes=68,
+        current_load_kg=5.2,
+        sensor_load_kg=5.2,
+        weight_increase_kg=1.1,
+        hours_since_last_wash=72.0,
+        urgent_clothing_count=2,
+        load_variation_kg=0.3,
+        cycle_elapsed_minutes=38,
+        base_cycle_minutes=78,
         final_spin_rpm=1000,
-        dry_laundry_weight_kg=3.0,
-        has_delicate_items=False,
-        needs_fast_dry=True,
-        has_outdoor_space=False,
-        has_dryer=False,
-        odor_sensitive=False,
-        indoor_humidity=58,
-        indoor_temperature=24.0,
-        airflow_level=55,
-        dehumidifier_on=True,
-    ),
-    "family4_household": DemoScenarioDefaults(
-        key="family4_household",
-        label="바쁜 4인 가구",
-        summary=(
-            "가족 빨래가 빠르게 많이 쌓이고 급하게 세탁해야 하는 옷도 있어, "
-            "세탁과 건조를 모두 빠르게 처리해야 하는 4인 가구 시나리오입니다."
-        ),
-        member_id="member-family4-001",
-        washer_id="washer-family4-001",
-        wash_status_id="wash-status-family4-001",
-        washer_capacity_kg=14.0,
-        household_size=4,
-        region="seoul",
-        city="Seoul",
-        current_load_kg=8.6,
-        sensor_load_kg=8.8,
-        weight_increase_kg=2.4,
-        hours_since_last_wash=36.0,
-        urgent_clothing_count=3,
-        load_variation_kg=0.6,
-        cycle_elapsed_minutes=42,
-        base_cycle_minutes=88,
-        final_spin_rpm=1000,
-        dry_laundry_weight_kg=7.8,
+        dry_laundry_weight_kg=5.0,
         has_delicate_items=False,
         needs_fast_dry=True,
         has_outdoor_space=False,
         has_dryer=True,
         odor_sensitive=True,
-        indoor_humidity=64,
-        indoor_temperature=23.0,
-        airflow_level=35,
+        indoor_humidity=62,
+        indoor_temperature=24.0,
+        airflow_level=40,
         dehumidifier_on=False,
     ),
 }
 
 
 DEMO_SCENARIO_ALIASES = {
-    "single": "single_household",
-    "1": "single_household",
-    "1p": "single_household",
-    "1person": "single_household",
-    "1인가구": "single_household",
-    "family4": "family4_household",
-    "family": "family4_household",
-    "4": "family4_household",
-    "4p": "family4_household",
-    "4person": "family4_household",
-    "4인가구": "family4_household",
+    "default": "dual_income_couple",
+    "single_household": "dual_income_couple",
+    "family4_household": "dual_income_couple",
+    "single": "dual_income_couple",
+    "family4": "dual_income_couple",
+    "dual_income": "dual_income_couple",
+    "dual_income_couple": "dual_income_couple",
+    "couple": "dual_income_couple",
 }
 
 
