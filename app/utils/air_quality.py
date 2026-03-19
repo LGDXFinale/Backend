@@ -11,7 +11,7 @@ from urllib.request import urlopen
 
 
 class AirQualityError(RuntimeError):
-    """에어코리아 API 처리 중 발생한 오류."""
+    """Raised when the Air Korea API cannot be read or parsed."""
 
 
 @dataclass(frozen=True)
@@ -27,9 +27,8 @@ class AirQualityObservation:
 
 
 class AirKoreaClient:
-    STATION_INFO_URL = "https://apis.data.go.kr/B552584/MsrstnInfoInqireSvc/getMsrstnList"
-    REALTIME_AIR_QUALITY_URL = (
-        "https://apis.data.go.kr/B552584/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty"
+    CITY_AIR_QUALITY_URL = (
+        "https://apis.data.go.kr/B552584/ArpltnInforInqireSvc/getCtprvnRltmMesureDnsty"
     )
 
     def __init__(self, service_key: str | None = None, timeout: int = 10) -> None:
@@ -57,42 +56,40 @@ class AirKoreaClient:
         longitude: float,
         address_hint: str,
     ) -> AirQualityObservation | None:
-        stations = self._get_station_candidates(address_hint)
-        if not stations:
+        sido_name = self._normalize_sido_name(address_hint)
+        if not sido_name:
             return None
 
-        nearest_station = max(
-            stations,
-            key=lambda item: self._station_score(
+        measures = self._request_items(
+            self.CITY_AIR_QUALITY_URL,
+            {
+                "serviceKey": self.service_key,
+                "returnType": "json",
+                "numOfRows": 100,
+                "pageNo": 1,
+                "sidoName": sido_name,
+                "ver": "1.0",
+            },
+        )
+        if not measures:
+            return None
+
+        measure = max(
+            measures,
+            key=lambda item: self._city_measure_score(
                 item=item,
                 latitude=latitude,
                 longitude=longitude,
                 address_hint=address_hint,
             ),
         )
-        station_name = nearest_station.get("stationName")
+        station_name = str(measure.get("stationName", "")).strip()
         if not station_name:
             return None
 
-        measures = self._request_items(
-            self.REALTIME_AIR_QUALITY_URL,
-            {
-                "serviceKey": self.service_key,
-                "returnType": "json",
-                "numOfRows": 10,
-                "pageNo": 1,
-                "stationName": station_name,
-                "dataTerm": "DAILY",
-                "ver": "1.4",
-            },
-        )
-        if not measures:
-            return None
-
-        measure = measures[0]
         return AirQualityObservation(
             station_name=station_name,
-            station_address=nearest_station.get("addr"),
+            station_address=sido_name,
             measured_at=measure.get("dataTime"),
             pm10=self._to_int(measure.get("pm10Value")),
             pm10_grade=self._describe_air_grade(measure.get("pm10Grade")),
@@ -100,56 +97,7 @@ class AirKoreaClient:
             pm25_grade=self._describe_air_grade(measure.get("pm25Grade")),
         )
 
-    def _get_station_candidates(self, address_hint: str) -> list[dict[str, Any]]:
-        seen: set[tuple[str, str]] = set()
-        candidates: list[dict[str, Any]] = []
-
-        for addr_query in self._build_address_queries(address_hint):
-            stations = self._request_items(
-                self.STATION_INFO_URL,
-                {
-                    "serviceKey": self.service_key,
-                    "returnType": "json",
-                    "numOfRows": 100,
-                    "pageNo": 1,
-                    "addr": addr_query,
-                },
-            )
-
-            for station in stations:
-                key = (
-                    str(station.get("stationName", "")).strip(),
-                    str(station.get("addr", "")).strip(),
-                )
-                if key in seen:
-                    continue
-
-                seen.add(key)
-                candidates.append(station)
-
-            if candidates:
-                # 좁은 주소에서 이미 후보를 찾았으면 더 넓은 검색은 생략한다.
-                break
-
-        return candidates
-
-    def _build_address_queries(self, address_hint: str) -> list[str]:
-        tokens = [token for token in address_hint.split() if token]
-        if not tokens:
-            return [address_hint]
-
-        queries: list[str] = []
-        for length in range(min(len(tokens), 3), 0, -1):
-            query = " ".join(tokens[:length])
-            if query not in queries:
-                queries.append(query)
-
-        if address_hint not in queries:
-            queries.insert(0, address_hint)
-
-        return queries
-
-    def _station_score(
+    def _city_measure_score(
         self,
         *,
         item: dict[str, Any],
@@ -157,22 +105,11 @@ class AirKoreaClient:
         longitude: float,
         address_hint: str,
     ) -> float:
+        del latitude, longitude
+
         score = 0.0
         station_name = str(item.get("stationName", "")).strip()
-        station_addr = str(item.get("addr", "")).strip()
         mang_name = str(item.get("mangName", "")).strip()
-        station_longitude = self._to_float(item.get("dmX"))
-        station_latitude = self._to_float(item.get("dmY"))
-        distance_sq = self._distance_sq(
-            latitude,
-            longitude,
-            station_latitude,
-            station_longitude,
-        )
-
-        # 거리 우선으로 점수를 주고, 주소 일치와 측정망 특성을 보정 점수로 더한다.
-        if distance_sq != float("inf"):
-            score += 1000 / (1 + distance_sq * 10000)
 
         if "도시대기" in mang_name:
             score += 20
@@ -180,10 +117,8 @@ class AirKoreaClient:
             score += 12
 
         for token in [token for token in address_hint.split() if token]:
-            if token in station_addr:
-                score += 8
             if token in station_name:
-                score += 10
+                score += 15
 
         return score
 
@@ -208,23 +143,50 @@ class AirKoreaClient:
             return items
         return []
 
-    @staticmethod
-    def _distance_sq(
-        lat1: float,
-        lon1: float,
-        lat2: float | None,
-        lon2: float | None,
-    ) -> float:
-        if lat2 is None or lon2 is None:
-            return float("inf")
-        return (lat1 - lat2) ** 2 + (lon1 - lon2) ** 2
-
-    @staticmethod
-    def _to_float(value: Any) -> float | None:
-        try:
-            return float(str(value))
-        except (TypeError, ValueError):
+    def _normalize_sido_name(self, address_hint: str) -> str | None:
+        tokens = [token for token in address_hint.split() if token]
+        if not tokens:
             return None
+
+        mapping = {
+            "서울": "서울",
+            "서울특별시": "서울",
+            "부산": "부산",
+            "부산광역시": "부산",
+            "대구": "대구",
+            "대구광역시": "대구",
+            "인천": "인천",
+            "인천광역시": "인천",
+            "광주": "광주",
+            "광주광역시": "광주",
+            "대전": "대전",
+            "대전광역시": "대전",
+            "울산": "울산",
+            "울산광역시": "울산",
+            "세종": "세종",
+            "세종특별자치시": "세종",
+            "경기": "경기",
+            "경기도": "경기",
+            "강원": "강원",
+            "강원도": "강원",
+            "강원특별자치도": "강원",
+            "충북": "충북",
+            "충청북도": "충북",
+            "충남": "충남",
+            "충청남도": "충남",
+            "전북": "전북",
+            "전북특별자치도": "전북",
+            "전라북도": "전북",
+            "전남": "전남",
+            "전라남도": "전남",
+            "경북": "경북",
+            "경상북도": "경북",
+            "경남": "경남",
+            "경상남도": "경남",
+            "제주": "제주",
+            "제주특별자치도": "제주",
+        }
+        return mapping.get(tokens[0])
 
     @staticmethod
     def _to_int(value: Any) -> int | None:
