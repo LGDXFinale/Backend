@@ -3,9 +3,13 @@ from __future__ import annotations
 import uvicorn
 from fastapi import FastAPI
 
+from app.care import router as care_router
+from app.device import router as device_router
 from app.fabric_damage import router as fabric_damage_router
+from app.home import router as home_router
 from app.laundry_timing import router as laundry_timing_router
 from app.laundry_progress import router as laundry_progress_router
+from app.menu import router as menu_router
 from app.drying_optimization.router import router as drying_optimization_router
 
 
@@ -16,6 +20,10 @@ app = FastAPI(
 )
 
 app.include_router(fabric_damage_router)
+app.include_router(home_router)
+app.include_router(device_router)
+app.include_router(care_router)
+app.include_router(menu_router)
 app.include_router(laundry_timing_router)
 app.include_router(laundry_progress_router)
 app.include_router(drying_optimization_router)
@@ -32,6 +40,10 @@ async def root() -> dict[str, object]:
         "message": "Laundry backend is running.",
         "docs": "/docs",
         "features": [
+            "home",
+            "device",
+            "care",
+            "menu",
             "laundry_timing",
             "fabric_damage",
             "laundry_progress",
