@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.screen_schemas import ScreenMetaResponse
+
 
 HomeCardLevel = Literal["low", "medium", "high"] | None
 
@@ -14,6 +16,7 @@ class HomeNavigationItemResponse(BaseModel):
     route: str = Field(..., description="Suggested frontend route")
     icon_key: str = Field(..., description="UI icon key")
     badge: str | None = Field(None, description="Optional badge text")
+    active: bool = Field(False, description="Whether the item is currently active")
 
 
 class HomeSummaryCardResponse(BaseModel):
@@ -28,6 +31,7 @@ class HomeSummaryCardResponse(BaseModel):
     primary_value: str | None = Field(None, description="Primary quick value")
     secondary_value: str | None = Field(None, description="Secondary quick value")
     route: str = Field(..., description="Suggested frontend route")
+    cta_label: str | None = Field(None, description="Suggested card button label")
     action_items: list[str] = Field(..., description="Suggested user actions")
 
 
@@ -36,6 +40,7 @@ class HomeSummaryResponse(BaseModel):
     member_id: str = Field(..., description="Member id")
     washer_id: str = Field(..., description="Washer id")
     location_label: str | None = Field(None, description="Resolved location label")
+    screen: ScreenMetaResponse = Field(..., description="Home screen metadata")
     timing: HomeSummaryCardResponse = Field(..., description="Laundry timing summary")
     progress: HomeSummaryCardResponse = Field(..., description="Laundry progress summary")
     drying: HomeSummaryCardResponse = Field(..., description="Drying recommendation summary")
