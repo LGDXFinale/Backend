@@ -14,6 +14,7 @@ from app.laundry_progress.schemas import ContaminationLevel, LaundryProgressResp
 from app.laundry_progress.service import get_laundry_progress_status
 from app.laundry_timing.schemas import LaundryRecommendationResponse
 from app.laundry_timing.service import LaundryTimingService
+from app.screen_schemas import ScreenActionResponse, ScreenMetaResponse
 
 
 DEFAULT_CONTA_LEVEL = get_args(ContaminationLevel)[1]
@@ -150,6 +151,7 @@ class HomeSummaryService:
             member_id=resolved_member_id,
             washer_id=resolved_washer_id,
             location_label=drying.weather_info.location_label,
+            screen=self._build_screen_meta(),
             timing=timing_card,
             progress=progress_card,
             drying=drying_card,
@@ -173,6 +175,7 @@ class HomeSummaryService:
             primary_value=recommendation.execution_window,
             secondary_value=recommendation.weather_summary,
             route="/wash/timing",
+            cta_label="자세히 보기",
             action_items=recommendation.action_items[:2],
         )
 
@@ -191,6 +194,7 @@ class HomeSummaryService:
             primary_value=f"{progress.remaining_time}분 남음",
             secondary_value=progress.expected_end_time,
             route="/wash/progress",
+            cta_label="진행 보기",
             action_items=progress.stage_notes[:2],
         )
 
@@ -209,7 +213,30 @@ class HomeSummaryService:
             primary_value=recommendation.dry_rec_method_name,
             secondary_value=recommendation.weather_info.weather_summary,
             route="/dry/recommend",
+            cta_label="추천 보기",
             action_items=recommendation.action_items[:2],
+        )
+
+    def _build_screen_meta(self) -> ScreenMetaResponse:
+        return ScreenMetaResponse(
+            title="홈",
+            subtitle="세탁 흐름에 맞는 빠른 진입 요약",
+            route="/home",
+            active_tab="home",
+            primary_action=ScreenActionResponse(
+                key="open_timing",
+                label="세탁 타이밍 보기",
+                route="/wash/timing",
+                style="primary",
+                badge="추천",
+            ),
+            secondary_action=ScreenActionResponse(
+                key="open_device",
+                label="디바이스 확인",
+                route="/device",
+                style="secondary",
+                badge=None,
+            ),
         )
 
     def _progress_level(self, progress_percent: int) -> str:
@@ -235,6 +262,7 @@ class HomeSummaryService:
                 route="/wash/timing",
                 icon_key="wash_timing",
                 badge="추천",
+                active=False,
             ),
             HomeNavigationItemResponse(
                 key="progress",
@@ -242,6 +270,7 @@ class HomeSummaryService:
                 route="/wash/progress",
                 icon_key="wash_progress",
                 badge="실시간",
+                active=False,
             ),
             HomeNavigationItemResponse(
                 key="drying",
@@ -249,6 +278,7 @@ class HomeSummaryService:
                 route="/dry/recommend",
                 icon_key="dry_recommend",
                 badge=None,
+                active=False,
             ),
         ]
 
@@ -260,6 +290,7 @@ class HomeSummaryService:
                 route="/home",
                 icon_key="home",
                 badge=None,
+                active=True,
             ),
             HomeNavigationItemResponse(
                 key="device",
@@ -267,6 +298,7 @@ class HomeSummaryService:
                 route="/device",
                 icon_key="device",
                 badge=None,
+                active=False,
             ),
             HomeNavigationItemResponse(
                 key="care",
@@ -274,6 +306,7 @@ class HomeSummaryService:
                 route="/care",
                 icon_key="care",
                 badge=None,
+                active=False,
             ),
             HomeNavigationItemResponse(
                 key="menu",
@@ -281,5 +314,6 @@ class HomeSummaryService:
                 route="/menu",
                 icon_key="menu",
                 badge=None,
+                active=False,
             ),
         ]
