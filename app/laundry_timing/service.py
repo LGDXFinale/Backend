@@ -64,6 +64,9 @@ class LoadSnapshot:
     current_weight: float
     washer_capacity: float
     load_ratio: float
+    washer_inner_weight_kg: float
+    washer_inner_load_ratio: float
+    basket_weight_kg: float
     load_source: str
     basket_sensor_weight_kg: float | None
     note: str
@@ -129,6 +132,9 @@ class LaundryTimingService:
             current_weight=snapshot.current_weight,
             washer_capacity=snapshot.washer_capacity,
             load_ratio=snapshot.load_ratio,
+            washer_inner_weight_kg=snapshot.washer_inner_weight_kg,
+            washer_inner_load_ratio=snapshot.washer_inner_load_ratio,
+            basket_weight_kg=snapshot.basket_weight_kg,
             load_source=snapshot.load_source,  # type: ignore[arg-type]
             manual_refresh=manual_refresh,
             basket_sensor_weight_kg=snapshot.basket_sensor_weight_kg,
@@ -340,6 +346,9 @@ class LaundryTimingService:
                 current_weight=snapshot.current_weight,
                 washer_capacity=snapshot.washer_capacity,
                 load_ratio=snapshot.load_ratio,
+                washer_inner_weight_kg=snapshot.washer_inner_weight_kg,
+                washer_inner_load_ratio=snapshot.washer_inner_load_ratio,
+                basket_weight_kg=snapshot.basket_weight_kg,
                 load_source=snapshot.load_source,  # type: ignore[arg-type]
                 manual_refresh=manual_refresh,
                 basket_sensor_weight_kg=snapshot.basket_sensor_weight_kg,
@@ -521,25 +530,34 @@ class LaundryTimingService:
         washer_capacity: float,
         basket_sensor_weight_kg: float | None,
     ) -> LoadSnapshot:
-        resolved_weight = (
+        resolved_weight = current_weight
+        basket_weight = (
             basket_sensor_weight_kg
             if basket_sensor_weight_kg is not None and basket_sensor_weight_kg > 0
-            else current_weight
+            else 0.0
         )
-        load_source = "sensor" if basket_sensor_weight_kg is not None and basket_sensor_weight_kg > 0 else "manual"
+        basket_weight = round(min(basket_weight, resolved_weight), 2)
+        washer_inner_weight = round(max(resolved_weight - basket_weight, 0.0), 2)
+        load_source = "sensor" if basket_weight > 0 else "manual"
         load_ratio = round(min((resolved_weight / washer_capacity) * 100, 100), 2)
+        washer_inner_load_ratio = round(min((washer_inner_weight / washer_capacity) * 100, 100), 2)
 
-        if load_source == "sensor":
-            note = "스마트 바구니 센서 기준 현재 적재량을 반영했습니다."
+        if basket_weight > 0 and washer_inner_weight > 0:
+            note = "Separated washer-inner load and basket load for display."
+        elif basket_weight > 0:
+            note = "Basket load is available from the sensor reading."
         elif load_ratio >= 80:
-            note = "수동 입력 기준 적재율이 높아 조기 세탁 판단이 필요합니다."
+            note = "Manual load looks high enough to recommend washing soon."
         else:
-            note = "수동 입력 기준 적재율은 아직 관리 가능한 수준입니다."
+            note = "Manual load is still manageable for now."
 
         return LoadSnapshot(
             current_weight=resolved_weight,
             washer_capacity=washer_capacity,
             load_ratio=load_ratio,
+            washer_inner_weight_kg=washer_inner_weight,
+            washer_inner_load_ratio=washer_inner_load_ratio,
+            basket_weight_kg=basket_weight,
             load_source=load_source,
             basket_sensor_weight_kg=basket_sensor_weight_kg,
             note=note,
