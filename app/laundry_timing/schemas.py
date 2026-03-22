@@ -77,16 +77,19 @@ class LaundryTimingWeatherSnapshotResponse(BaseModel):
 
 
 class CurrentLoadResponse(BaseModel):
-    member_id: str = Field(..., description="회원 ID")
-    washer_id: str = Field(..., description="세탁기 ID")
-    measured_at: str = Field(..., description="적재량 측정 시각")
-    current_weight: float = Field(..., gt=0, description="현재 적재량(kg)")
-    washer_capacity: float = Field(..., gt=0, description="세탁기 용량(kg)")
-    load_ratio: float = Field(..., ge=0, le=100, description="적재율(%)")
-    load_source: LoadSource = Field(..., description="적재량 측정 출처")
-    manual_refresh: bool = Field(..., description="수동 새로고침 여부")
-    basket_sensor_weight_kg: float | None = Field(None, description="스마트 바구니 센서 무게")
-    note: str = Field(..., description="적재량 판단 요약")
+    member_id: str = Field(..., description="??? ID")
+    washer_id: str = Field(..., description="?????ID")
+    measured_at: str = Field(..., description="???????? ???")
+    current_weight: float = Field(..., gt=0, description="??? ??? ?????kg)")
+    washer_capacity: float = Field(..., gt=0, description="????????(kg)")
+    load_ratio: float = Field(..., ge=0, le=100, description="??? ?????%)")
+    washer_inner_weight_kg: float = Field(..., ge=0, description="??????? ???????? ????????")
+    washer_inner_load_ratio: float = Field(..., ge=0, le=100, description="??????? ?????%)")
+    basket_weight_kg: float = Field(..., ge=0, description="?????? ??? ??? ????????")
+    load_source: LoadSource = Field(..., description="???????? ???")
+    manual_refresh: bool = Field(..., description="??? ?????? ???")
+    basket_sensor_weight_kg: float | None = Field(None, description="????????????? ???")
+    note: str = Field(..., description="???????? ???")
 
 
 class FutureLoadPredictionResponse(BaseModel):
