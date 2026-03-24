@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import os
+
 import uvicorn
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.care import router as care_router
 from app.device import router as device_router
@@ -18,6 +21,25 @@ app = FastAPI(
     version="0.1.0",
     description="Docs-driven FastAPI backend for laundry recommendation features.",
 )
+
+
+def _load_cors_allowed_origins() -> list[str]:
+    raw = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
+    if not raw:
+        return []
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+
+cors_allowed_origins = _load_cors_allowed_origins()
+if cors_allowed_origins:
+    allow_all = "*" in cors_allowed_origins
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"] if allow_all else cors_allowed_origins,
+        allow_credentials=not allow_all,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 app.include_router(fabric_damage_router)
 app.include_router(home_router)
